@@ -1519,7 +1519,7 @@ class RunJob(BaseTask):
                 piped += '--all'
             if not job.policy.mode_pull:
                 args = [piped, '|']+args
-        args += ['{}::{}-{}-{}'.format(repositoryPath, policy_type, archive_client_name, jobDateString)]
+        args += ['{}::{}-{}-{}-{}'.format(repositoryPath, policy_type, archive_client_name, job.policy.repository.name, jobDateString)]
         if job.policy.mode_pull and policy_type in ('rootfs', 'config', 'mail'):
             path = '.'+path
         args += [path]
