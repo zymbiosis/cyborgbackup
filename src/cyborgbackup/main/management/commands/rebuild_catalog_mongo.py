@@ -10,7 +10,7 @@ from collections import OrderedDict
 from django.conf import settings
 from distutils.version import LooseVersion as Version
 from django.core.management.base import BaseCommand
-from cyborgbackup.main.models import Job, Repository
+from cyborgbackup.main.models import Job, Repository, Policy, Client
 from cyborgbackup.main.expect import run
 from cyborgbackup.main.models.settings import Setting
 from cyborgbackup.main.utils.common import get_ssh_version
@@ -178,13 +178,92 @@ class Command(BaseCommand):
         repoArchives = []
         if repos.exists():
             for repo in repos:
+                print('Checking archives in repo {}'.format(repo.name))
                 lines = self.launch_command(["borg", "list", "::"], repo, repo.repository_key, repo.path, **kwargs)
 
                 for line in lines:
                     archive_name = line.split(' ')[0]  #
+                    isArchive = False
                     for archtype in ('rootfs', 'vm', 'mysql', 'postgresql', 'config', 'piped', 'mail', 'folders'):
                         if '{}-'.format(archtype) in archive_name:
                             repoArchives.append(archive_name)
+                            isArchive = True
+
+                    #Now lets add in any archives that don't exist
+                    job = Job.objects.filter(repository=repo,
+                                             status='successful',
+                                             archive_name=archive_name,
+                                             job_type='catalog')
+                                             
+                    if not job.exists() and isArchive == True:
+                        [archtype, archhost, *_] = archive_name.split('-')
+
+                        client = Client.objects.filter(hostname=archhost)[0]
+                        policy = Policy.objects.filter(repository__pk=repo.pk,
+                                                       clients__id=client.pk)[0]
+
+                        #This must be an orphan, lets create a job for it so we can track
+                        new_job = Job()
+                        new_job.policy_id = policy.pk
+                        new_job.client_id = client.pk
+                        new_job.name = 'Orphan Job {} {}'.format(repo.name, archive_name)
+                        new_job.repository = repo
+                        new_job.status = 'successful'
+                        new_job.job_type = 'catalog'
+                        new_job.failed = False
+                        new_job.archive_name = archive_name
+                        new_job.save()
+
+                        print('Added new job `{}` with pk {}'.format(new_job.name, new_job.pk))
+
+                        archiveLines = self.launch_command(["borg",
+                                                            "list",
+                                                            "--json-lines",
+                                                            "::{}".format(archive_name)],
+                                                           repo,
+                                                           repo.repository_key,
+                                                           repo.path,
+                                                           **kwargs)
+                        hoursTimezone = round(
+                            (round(
+                                (datetime.now()-datetime.utcnow()).total_seconds())/1800)
+                            / 2)
+
+                        print('Clean archive {} catalog entries.'.format(archive_name))
+                        db.catalog.delete_many({'archive_name': archive_name})
+
+                        list_entries = []
+                        for line in archiveLines:
+                            try:
+                                json_entry = json.loads(line)
+                                new_entry = {
+                                    'archive_name': new_job.archive_name,
+                                    'job_id': new_job.pk,
+                                    'mode': json_entry['mode'],
+                                    'path': json_entry['path'],
+                                    'owner': json_entry['user'],
+                                    'group': json_entry['group'],
+                                    'type': json_entry['type'],
+                                    'size': json_entry['size'],
+                                    'healthy': json_entry['healthy'],
+                                    'mtime': '{}+0{}00'.format(json_entry['mtime'].replace('T', ' '), hoursTimezone)
+                                }
+                                list_entries.append(new_entry)
+                            except Exception as e:
+                                print('Exception getting line: {0}'.format(str(e)))
+                                continue
+
+                        if len(list_entries) > 0:
+                            print('Insert {} entries from {} archive'.format(len(list_entries), archive_name))
+                            db.catalog.insert_many(list_entries)
+                            if 'archive_name_text_path_text' not in db.catalog.index_information().keys():
+                                db.catalog.create_index([
+                                    ('archive_name', pymongo.TEXT),
+                                    ('path', pymongo.TEXT)
+                                ], name='archive_name_text_path_text', default_language='english')
+                            if 'archive_name_1' not in db.catalog.index_information().keys():
+                                db.catalog.create_index('archive_name', name='archive_name_1',
+                                                        default_language='english')
 
             entries = Job.objects.filter(job_type='job', status='successful')
             if entries.exists():
