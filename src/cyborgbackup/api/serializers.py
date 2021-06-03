@@ -620,7 +620,7 @@ class JobSerializer(BaseSerializer):
         fields = ('*', 'launch_type', 'status', 'policy',
                   'failed', 'started', 'finished', 'elapsed', 'job_args',
                   'original_size', 'compressed_size', 'deduplicated_size', 'archive_name',
-                  'job_cwd', 'job_env', 'job_explanation', 'client', 'repository',
+                  'job_cwd', 'job_env', 'job_explanation', 'client', 'repository', 'master_job',
                   'dependent_jobs', 'result_traceback', 'event_processing_finished', 'job_type')
 
     def get_types(self):
@@ -873,7 +873,7 @@ class ClientSerializer(BaseSerializer):
 
     class Meta:
         model = Client
-        fields = ('*', '-name', '-description', 'hostname', 'ip', 'bandwidth_limit',
+        fields = ('*', '-name', '-description', 'hostname', 'ip', 'bandwidth_limit', 'port',
                   'version', 'ready', 'hypervisor_ready', 'hypervisor_name', 'enabled', 'uuid')
 
     def get_summary_fields(self, obj):

@@ -142,6 +142,7 @@ class Job(CommonModelNameNotUnique, JobTypeStringMixin, TaskManagerJobMixin):
         ('catalog', 'Catalog Job'),
         ('prune', 'Prune Job'),
         ('restore', 'Restore Job'),
+        ('integrity', 'Integrity Check Job'),
     ]
 
     VERBOSITY_CHOICES = [
@@ -296,6 +297,13 @@ class Job(CommonModelNameNotUnique, JobTypeStringMixin, TaskManagerJobMixin):
         null=True,
         editable=False,
     )
+    master_job = models.ForeignKey(
+        'self',
+        related_name='%(class)s_master_job+',
+        on_delete=models.CASCADE,
+        null=True,
+        editable=False,
+    )
     hypervisor = models.CharField(
         max_length=1024,
         blank=True,
@@ -428,7 +436,7 @@ class Job(CommonModelNameNotUnique, JobTypeStringMixin, TaskManagerJobMixin):
 
         # If we have a start and finished time, and haven't already calculated
         # out the time that elapsed, do so.
-        if self.started and self.finished and not self.elapsed:
+        if self.started and self.finished:
             td = self.finished - self.started
             elapsed = (td.microseconds + (td.seconds + td.days * 24 * 3600) * 10 ** 6) / (10 ** 6 * 1.0)
         else:
@@ -699,7 +707,7 @@ class Job(CommonModelNameNotUnique, JobTypeStringMixin, TaskManagerJobMixin):
     @classmethod
     def _get_job_field_names(cls):
         return set(
-            ['name', 'description', 'policy', 'client', 'repository', 'job_type']
+            ['name', 'description', 'policy', 'client', 'repository', 'job_type', 'master_job']
         )
 
     def copy_job(self, limit=None):

@@ -11,8 +11,10 @@ import tempfile
 import time
 import traceback
 import datetime
+import random
 import six
 import smtplib
+import pymongo
 from email.message import EmailMessage
 from email.headerregistry import Address
 try:
@@ -428,28 +430,10 @@ class LogErrorsTask(Task):
         super(LogErrorsTask, self).on_failure(exc, task_id, args, kwargs, einfo)
 
 
-# @shared_task(queue='cyborgbackup', base=LogErrorsTask)
-# def send_notifications(notification_list, job_id=None):
-#     if not isinstance(notification_list, list):
-#         raise TypeError("notification_list should be of type list")
-#     if job_id is not None:
-#         job_actual = Job.objects.get(id=job_id)
-#
-#     notifications = Notification.objects.filter(id__in=notification_list)
-#     if job_id is not None:
-#         job_actual.notifications.add(*notifications)
-#
-#     for notification in notifications:
-#         try:
-#             sent = notification.notification_template.send(notification.subject, notification.body)
-#             notification.status = "successful"
-#             notification.notifications_sent = sent
-#         except Exception as e:
-#             logger.error(six.text_type("Send Notification Failed {}").format(e))
-#             notification.status = "failed"
-#             notification.error = smart_str(e)
-#         finally:
-#             notification.save()
+def launch_integrity_check():
+    # TODO
+    # Launch Integrity Check on all Repositories based on crontab defined in Settings
+    print("You didn't say the magic word")
 
 
 units = {"B": 1, "kB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12}
@@ -470,7 +454,7 @@ def compute_borg_size(self):
                               job_type='job').order_by('-finished')
     if jobs.exists():
         for job in jobs:
-            events = JobEvent.objects.filter(job_id=job.pk).order_by('-counter')
+            events = JobEvent.objects.filter(job_id=job.pk, stdout__contains='This archive:').order_by('-counter')
             for event in events:
                 prg = re.compile(r"This archive:\s*([0-9\.]*\s*.B)\s*([0-9\.]*\s*.B)\s*([0-9\.]*\s*.B)\s*")
                 m = prg.match(event.stdout)
@@ -480,7 +464,7 @@ def compute_borg_size(self):
                     job.deduplicated_size = parseSize(m.group(3))
                     job.save()
                     break
-    repos = Repository.objects.filter(original_size=0, deduplicated_size=0, compressed_size=0, ready=True)
+    repos = Repository.objects.filter(ready=True)
     if repos.exists():
         for repo in repos:
             jobs = Job.objects.filter(policy__repository_id=repo.pk,
@@ -488,7 +472,7 @@ def compute_borg_size(self):
                                       job_type='job').order_by('-finished')
             if jobs.exists():
                 last_running_job = jobs.first()
-                events = JobEvent.objects.filter(job_id=last_running_job.pk).order_by('-counter')
+                events = JobEvent.objects.filter(job_id=last_running_job.pk, stdout__contains='All archives:').order_by('-counter')
                 for event in events:
                     prg = re.compile(r"All archives:\s*([0-9\.]*\s*.B)\s*([0-9\.]*\s*.B)\s*([0-9\.]*\s*.B)\s*")
                     m = prg.match(event.stdout)
@@ -498,6 +482,40 @@ def compute_borg_size(self):
                         repo.deduplicated_size = parseSize(m.group(3))
                         repo.save()
                         break
+
+
+@shared_task(bind=True, base=LogErrorsTask)
+def random_restore_integrity(self):
+    logger.debug('Auto Restore Test for check Integrity')
+    try:
+        setting = Setting.objects.get(key='cyborgbackup_catalog_enabled')
+        if setting.value == 'True':
+            catalog_enabled = True
+        else:
+            catalog_enabled = False
+    except Exception:
+        catalog_enabled = True
+
+    try:
+        setting = Setting.objects.get(key='cyborgbackup_auto_restore_test')
+        if setting.value == 'True':
+            autorestore_test = True
+        else:
+            autorestore_test = False
+    except Exception:
+        autorestore_test = False
+
+    if autorestore_test and catalog_enabled:
+        jobs = Job.objects.filter(archive_name__isnull=False)
+        if jobs.exists():
+            selected_job = random.choice(jobs)
+            db = pymongo.MongoClient(settings.MONGODB_URL).local
+            query = {"archive_name": selected_job.archive_name, "type": "-"}
+            entries_count = db.catalog.count(query)
+            r = random.randint(1, entries_count + 1)
+            selected_items = list(db.catalog.find(query).limit(1).skip(r))
+            if len(selected_items) == 1:
+                print(selected_items)
 
 
 @shared_task(bind=True, base=LogErrorsTask)
@@ -672,22 +690,23 @@ def cyborgbackup_periodic_scheduler(self):
         policy.save()
     policies = Policy.objects.enabled().between(last_run, run_now)
     for policy in policies:
-        policy.save()  # To update next_run timestamp.
-        try:
-            new_job = policy.create_job()
-            new_job.launch_type = 'scheduled'
-            new_job.save(update_fields=['launch_type'])
-            can_start = new_job.signal_start()
-        except Exception:
-            logger.exception('Error spawning scheduled job.')
-            continue
-        if not can_start:
-            new_job.status = 'failed'
-            expl = "Scheduled job could not start because it was not in the right state or required manual credentials"
-            new_job.job_explanation = expl
-            new_job.save(update_fields=['status', 'job_explanation'])
-            new_job.websocket_emit_status("failed")
-        emit_channel_notification('schedules-changed', dict(id=policy.id, group_name="jobs"))
+        if policy.repository.enabled and policy.schedule.enabled:
+            policy.save()  # To update next_run timestamp.
+            try:
+                new_job = policy.create_job()
+                new_job.launch_type = 'scheduled'
+                new_job.save(update_fields=['launch_type'])
+                can_start = new_job.signal_start()
+            except Exception:
+                logger.exception('Error spawning scheduled job.')
+                continue
+            if not can_start:
+                new_job.status = 'failed'
+                expl = "Scheduled job could not start because it was not in the right state or required manual credentials"
+                new_job.job_explanation = expl
+                new_job.save(update_fields=['status', 'job_explanation'])
+                new_job.websocket_emit_status("failed")
+            emit_channel_notification('schedules-changed', dict(id=policy.id, group_name="jobs"))
     state.save()
 
 
@@ -1157,12 +1176,18 @@ class RunJob(BaseTask):
                 os.chmod(path, stat.S_IEXEC | stat.S_IREAD)
                 args = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
                 args += ['{}@{}'.format(client_user, job.client.hostname)]
+                if job.client.port != 22:
+                    args += ['-p', job.client.port]
                 args += ['\"', 'mkdir', '-p', env['PRIVATE_DATA_DIR'], '\"', '&&']
                 args += ['scp', '-qo', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
                 args += ['-o', 'PreferredAuthentications=publickey']
+                if job.client.port != 22:
+                    args += ['-P'+job.client.port]
                 args += [path, path_env, '{}@{}:{}/'.format(client_user, job.client.hostname, env['PRIVATE_DATA_DIR'])]
                 args += ['&&', 'rm', '-f', path, path_env, '&&']
                 args += ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
+                if job.client.port != 22:
+                    args += ['-p', job.client.port]
                 args += ['{}@{}'.format(client_user, job.client.hostname)]
                 args += ['\". ', os.path.join(env['PRIVATE_DATA_DIR'], os.path.basename(path_env)), '&&']
                 args += ['rm', os.path.join(env['PRIVATE_DATA_DIR'], os.path.basename(path_env)), '&&']
@@ -1267,20 +1292,12 @@ class RunJob(BaseTask):
                 handle, path = tempfile.mkstemp()
                 f = os.fdopen(handle, 'w')
                 token, created = Token.objects.get_or_create(user=agentUser)
-                master_jobs = Job.objects.filter(dependent_jobs=job.pk)
-                master_job = None
-                if master_jobs.exists():
-                    master_job = master_jobs.first()
-                if not master_job:
-                    master_jobs = Job.objects.filter(dependent_jobs=job.old_pk)
-                    if master_jobs.exists():
-                        master_job = master_jobs.first()
-                if not master_job:
+                if not job.master_job:
                     raise Exception("Unable to get master job")
                 job_events = JobEvent.objects.filter(
-                    job=master_job.pk,
+                    job=job.master_job.pk,
                     stdout__contains="Archive name: {}".format(
-                        master_job.policy.policy_type
+                        job.master_job.policy.policy_type
                     )
                 )
                 archive_name = None
@@ -1289,8 +1306,8 @@ class RunJob(BaseTask):
                     archive_name = job_stdout.split(':')[1].strip()
                 if not archive_name:
                     raise Exception("Latest backup haven't archive name in the report")
-                master_job.archive_name = archive_name
-                master_job.save()
+                job.master_job.archive_name = archive_name
+                job.master_job.save()
                 base_script = os.path.join(settings.SCRIPTS_DIR, 'cyborgbackup', 'fill_catalog')
                 with open(base_script) as fs:
                     script = fs.read()
@@ -1351,12 +1368,18 @@ class RunJob(BaseTask):
             f.close()
             new_args = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
             new_args += ['{}@{}'.format(client_user, client)]
+            if job.client.port != 22:
+                new_args += ['-p', job.client.port]
             new_args += ['\"', 'mkdir', '-p', env['PRIVATE_DATA_DIR'], '\"', '&&']
             new_args += ['scp', '-qo', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
+            if job.client.port != 22:
+                new_args += ['-P'+job.client.port]
             new_args += [path_env, '{}@{}:{}/'.format(client_user, client, env['PRIVATE_DATA_DIR'])]
             new_args += ['&&', 'rm', '-f', path_env, '&&']
             new_args += ['ssh', '-Ao', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
             new_args += ['{}@{}'.format(client_user, client)]
+            if job.client.port != 22:
+                args += ['-p', job.client.port]
             new_args += ['\". ', os.path.join(env['PRIVATE_DATA_DIR'], os.path.basename(path_env)), '&&']
             new_args += ['rm', os.path.join(env['PRIVATE_DATA_DIR'], os.path.basename(path_env)), '&&']
             new_args += [' '.join(args), '; exitcode=$?;', 'rm', '-rf', env['PRIVATE_DATA_DIR'], '; exit $exitcode\"']
@@ -1442,6 +1465,12 @@ class RunJob(BaseTask):
         if policy_type == 'folders':
             obj_folders = json.loads(job.policy.extra_vars)
             path = ' '.join(obj_folders['folders'])
+        if policy_type in ('rootfs', 'config', 'folders'):
+            obj_folders = json.loads(job.policy.extra_vars)
+            if 'exclude' in obj_folders.keys():
+                for item in obj_folders['exclude']:
+                    if item not in excludedDirs:
+                        excludedDirs.append(item)
         if policy_type == 'mail':
             path = '/var/lib/mail /var/mail'
         if policy_type in ('mysql', 'postgresql', 'piped'):
@@ -1586,13 +1615,10 @@ class RunJob(BaseTask):
                 else:
                     env['CYBORG_BORG_REPOSITORY'] = job.policy.repository.path
             if job.job_type == 'catalog':
-                master_jobs = Job.objects.filter(dependent_jobs=job.pk)
-                if master_jobs.exists():
-                    master_job = master_jobs.first()
                 job_events = JobEvent.objects.filter(
-                    job=master_job.pk,
+                    job=job.master_job.pk,
                     stdout__contains="Archive name: {}".format(
-                        master_job.policy.policy_type
+                        job.master_job.policy.policy_type
                     )
                 )
                 archive_name = None
@@ -1603,7 +1629,7 @@ class RunJob(BaseTask):
                     env['CYBORG_JOB_ARCHIVE_NAME'] = archive_name
                 else:
                     raise Exception('Unable to get archive from backup. Backup job may failed.')
-                env['CYBORG_JOB_ID'] = str(master_job.pk)
+                env['CYBORG_JOB_ID'] = str(job.master_job.pk)
         else:
             env['BORG_PASSPHRASE'] = job.policy.repository.repository_key
             env['BORG_REPO'] = job.policy.repository.path
