@@ -10,7 +10,7 @@ from collections import OrderedDict
 from django.conf import settings
 from distutils.version import LooseVersion as Version
 from django.core.management.base import BaseCommand
-from cyborgbackup.main.models import Job, Repository
+from cyborgbackup.main.models import Job, Repository, Policy, Client
 from cyborgbackup.main.expect import run
 from cyborgbackup.main.models.settings import Setting
 from cyborgbackup.main.utils.common import get_ssh_version
@@ -195,7 +195,6 @@ class Command(BaseCommand):
                                              status='successful',
                                              archive_name=archive_name,
                                              job_type='catalog')
-
                     if not job.exists() and isArchive == True:
                         [archtype, archhost, *_] = archive_name.split('-')
 

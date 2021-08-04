@@ -96,7 +96,7 @@ def _get_metrics():
     instance = socket.gethostname()
     METRICS_CYBORG_INFO.labels(instance, get_version()).set(1)
 
-    for job_state in Job.ALL_STATUS_CHOICES:
+    for job_state in Job.JOB_STATUS_CHOICES:
         METRICS_CYBORG_JOBS_STATUS.labels(instance, job_state[0]).set(
             Job.objects.filter(status=job_state[0]).count()
         )
@@ -135,7 +135,7 @@ def _get_metrics():
             repository.original_size
         )
 
-    for job in Job.objects.exclude(archive_name=''):
+    for job in Job.objects.exclude(archive_name__isnull=True):
         METRICS_CYBORG_BACKUPS_SIZE.labels(instance, job.archive_name, 'compressed').set(job.compressed_size)
         METRICS_CYBORG_BACKUPS_SIZE.labels(instance, job.archive_name, 'deduplicated').set(job.deduplicated_size)
         METRICS_CYBORG_BACKUPS_SIZE.labels(instance, job.archive_name, 'original').set(job.original_size)
