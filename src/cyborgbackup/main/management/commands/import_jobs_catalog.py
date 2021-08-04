@@ -10,7 +10,7 @@ from collections import OrderedDict
 from django.conf import settings
 from distutils.version import LooseVersion as Version
 from django.core.management.base import BaseCommand
-from cyborgbackup.main.models import Job, Repository
+from cyborgbackup.main.models import Job, Repository, Client, Policy, JobEvent
 from cyborgbackup.main.expect import run
 from cyborgbackup.main.models.settings import Setting
 from cyborgbackup.main.utils.common import get_ssh_version
@@ -25,9 +25,9 @@ Try upgrading OpenSSH or providing your private key in an different format. \
 
 
 class Command(BaseCommand):
-    """Rebuild Catalog
+    """Import Jobs and Catalog
     """
-    help = 'Rebuild Catalog from all Repositories.'
+    help = 'Import existing jobs from borg repositories.'
 
     cleanup_paths = []
 
@@ -193,8 +193,7 @@ class Command(BaseCommand):
                     #Now lets add in any archives that don't exist
                     job = Job.objects.filter(repository=repo,
                                              status='successful',
-                                             archive_name=archive_name,
-                                             job_type='catalog')
+                                             archive_name=archive_name)
 
                     if not job.exists() and isArchive == True:
                         [archtype, archhost, *_] = archive_name.split('-')
@@ -217,6 +216,31 @@ class Command(BaseCommand):
                         new_job.save()
 
                         print('Added new job `{}` with pk {}'.format(new_job.name, new_job.pk))
+                        
+                        jobLines = self.launch_command(["borg",
+                                                        "info",
+                                                        "::{}".format(archive_name)],
+                                                        repo,
+                                                        repo.repository_key,
+                                                        repo.path,
+                                                        **kwargs)
+
+                        counter = 1
+                        for line in jobLines:
+                            new_event = JobEvent()
+                            new_event.created = now()
+                            new_event.modified = now()
+                            new_event.job = new_job.pk
+                            new_event.event = 'verbose'
+                            new_event.counter = counter
+                            new_event.stdout = line
+                            new_event.start_line = counter
+                            new_event.end_line = counter + 1
+                            new_event.save()
+                            
+                            counter = counter + 1
+
+
                         archiveLines = self.launch_command(["borg",
                                                             "list",
                                                             "--json-lines",
