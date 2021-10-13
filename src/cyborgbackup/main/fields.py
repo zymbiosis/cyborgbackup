@@ -29,7 +29,7 @@ from jsonschema import Draft4Validator, FormatChecker
 import jsonschema.exceptions
 
 # Django-JSONField
-from jsonfield import JSONField as upstream_JSONField
+from django.db.models import JSONField as upstream_JSONField
 
 # DRF
 from rest_framework import serializers
@@ -205,7 +205,7 @@ class JSONField(upstream_JSONField):
     def _get_val_from_obj(self, obj):
         return self.value_from_object(obj)
 
-    def from_db_value(self, value, expression, connection, context):
+    def from_db_value(self, value, expression, connection):
         if value in {'', None} and not self.null:
             return {}
         if isinstance(value, six.string_types):

@@ -11,8 +11,8 @@ services:
       - "5432:5432"
   rabbitmq:
     image: "rabbitmq:management"
-    env_file:
-      - .env
+    volumes:
+      - ./tools/rabbitmq_docker/:/etc/rabbitmq/
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -29,7 +29,7 @@ services:
       - rabbitmq
   channel_workers:
     image: cyborgbackup/cyborgbackup:latest
-    command: bash -c 'python /cyborgbackup/manage.py runworker --only-channels websocket.*'
+    command: bash -c 'python /cyborgbackup/manage.py runworker websocket.*'
     volumes:
       - ./src:/cyborgbackup
     env_file:
